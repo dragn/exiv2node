@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <string>
 #include <map>
+#include <list>
 #include <exception>
 #include <exiv2/image.hpp>
 #include <exiv2/exif.hpp>
@@ -15,7 +16,7 @@ using namespace v8;
 
 // Create a map of strings for passing them back and forth between the V8 and
 // worker threads.
-typedef std::map<std::string, std::string> tag_map_t;
+typedef std::map<std::string, std::list<std::string> > tag_map_t;
 
 class Exiv2Worker : public NanAsyncWorker {
  public:
@@ -51,7 +52,7 @@ class GetTagsWorker : public Exiv2Worker {
       if (exifData.empty() == false) {
         Exiv2::ExifData::const_iterator end = exifData.end();
         for (Exiv2::ExifData::const_iterator i = exifData.begin(); i != end; ++i) {
-          tags.insert(std::pair<std::string, std::string> (i->key(), i->value().toString()));
+          tags[i->key()].push_back(i->value().toString());
         }
       }
 
@@ -59,7 +60,7 @@ class GetTagsWorker : public Exiv2Worker {
       if (iptcData.empty() == false) {
         Exiv2::IptcData::const_iterator end = iptcData.end();
         for (Exiv2::IptcData::const_iterator i = iptcData.begin(); i != end; ++i) {
-          tags.insert(std::pair<std::string, std::string> (i->key(), i->value().toString()));
+          tags[i->key()].push_back(i->value().toString());
         }
       }
 
@@ -67,7 +68,7 @@ class GetTagsWorker : public Exiv2Worker {
       if (xmpData.empty() == false) {
         Exiv2::XmpData::const_iterator end = xmpData.end();
         for (Exiv2::XmpData::const_iterator i = xmpData.begin(); i != end; ++i) {
-          tags.insert(std::pair<std::string, std::string> (i->key(), i->value().toString()));
+          tags[i->key()].push_back(i->value().toString());
         }
       }
     } catch (std::exception& e) {
@@ -88,7 +89,19 @@ class GetTagsWorker : public Exiv2Worker {
       Local<Object> hash = NanNew<Object>();
       // Copy the tags out.
       for (tag_map_t::iterator i = tags.begin(); i != tags.end(); ++i) {
-        hash->Set(NanNew<String>(i->first.c_str()), NanNew<String>(i->second.c_str()));
+        std::list<std::string> &value = i->second;
+        if (value.size() > 1) {
+          // insert array
+          Local<Array> list = NanNew<Array>(value.size());
+          uint32_t index = 0;
+          for (std::list<std::string>::iterator j = value.begin(); j != value.end(); j++) {
+            list->Set(index++, NanNew<String>(j->c_str()));
+          }
+          hash->Set(NanNew<String>(i->first.c_str()), list);
+        } else {
+          // insert string
+          hash->Set(NanNew<String>(i->first.c_str()), NanNew<String>(value.front().c_str()));
+        }
       }
       argv[1] = hash;
     }
@@ -135,16 +148,52 @@ class SetTagsWorker : public Exiv2Worker {
       Exiv2::IptcData &iptcData = image->iptcData();
       Exiv2::XmpData &xmpData = image->xmpData();
 
+      exifData.sortByKey();
+      iptcData.sortByKey();
+      xmpData.sortByKey();
+
       // Assign the tags.
       for (tag_map_t::iterator i = tags.begin(); i != tags.end(); ++i) {
-        if (i->first.compare(0, 5, "Exif.") == 0) {
-          exifData[i->first].setValue(i->second);
-        } else if (i->first.compare(0, 5, "Iptc.") == 0) {
-          iptcData[i->first].setValue(i->second);
-        } else if (i->first.compare(0, 4, "Xmp.") == 0) {
-          xmpData[i->first].setValue(i->second);
+        const std::string &key = i->first;
+        std::list<std::string> &val = i->second;
+        if (val.size() > 1) {
+          // multiple entries, replace all matching properties
+          if (key.compare(0, 5, "Exif.") == 0) {
+            Exiv2::ExifData::iterator it = exifData.findKey(Exiv2::ExifKey(key));
+            while (it != exifData.end() && it->key() == key) it = exifData.erase(it);
+            Exiv2::AsciiValue exivValue;
+            for (std::list<std::string>::iterator l = val.begin(); l != val.end(); l++) {
+              exivValue.read(*l);
+              exifData.add(Exiv2::ExifKey(key), &exivValue);
+            }
+          } else if (key.compare(0, 5, "Iptc.") == 0) {
+            Exiv2::IptcData::iterator it = iptcData.findKey(Exiv2::IptcKey(key));
+            while (it != iptcData.end() && it->key() == key) it = iptcData.erase(it);
+            Exiv2::AsciiValue exivValue;
+            for (std::list<std::string>::iterator l = val.begin(); l != val.end(); l++) {
+              exivValue.read(*l);
+              iptcData.add(Exiv2::IptcKey(key), &exivValue);
+            }
+            iptcData[key].setValue(val.front());
+          } else if (key.compare(0, 4, "Xmp.") == 0) {
+            Exiv2::XmpData::iterator it = xmpData.findKey(Exiv2::XmpKey(key));
+            while (it != xmpData.end() && it->key() == key) it = xmpData.erase(it);
+            Exiv2::AsciiValue exivValue;
+            for (std::list<std::string>::iterator l = val.begin(); l != val.end(); l++) {
+              exivValue.read(*l);
+              xmpData.add(Exiv2::XmpKey(key), &exivValue);
+            }
+          }
         } else {
-          //std::cerr << "skipping unknown tag " << i->first << std::endl;
+          if (key.compare(0, 5, "Exif.") == 0) {
+            exifData[key].setValue(val.front());
+          } else if (key.compare(0, 5, "Iptc.") == 0) {
+            iptcData[key].setValue(val.front());
+          } else if (key.compare(0, 4, "Xmp.") == 0) {
+            xmpData[key].setValue(val.front());
+          } else {
+            //std::cerr << "skipping unknown tag " << key << std::endl;
+          }
         }
       }
 
@@ -189,11 +238,15 @@ NAN_METHOD(SetImageTags) {
   Local<Object> tags = Local<Object>::Cast(args[1]);
   Local<Array> keys = tags->GetPropertyNames();
   for (unsigned i = 0; i < keys->Length(); i++) {
-    Handle<v8::Value> key = keys->Get(i);
-    worker->tags.insert(std::pair<std::string, std::string> (
-      *NanUtf8String(key),
-      *NanUtf8String(tags->Get(key)))
-    );
+    Handle<Value> key = keys->Get(i);
+    if (tags->Get(key)->IsArray()) {
+      Handle<Array> array = Handle<Array>::Cast(tags->Get(key));
+      for (unsigned i = 0; i < array->Length(); i++) {
+        worker->tags[*NanUtf8String(key)].push_back(*NanUtf8String(array->Get(i)));
+      }
+    } else {
+      worker->tags[*NanUtf8String(key)].push_back(*NanUtf8String(tags->Get(key)));
+    }
   }
 
   NanAsyncQueueWorker(worker);

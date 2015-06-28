@@ -44,6 +44,14 @@ describe('exiv2', function(){
         done();
       });
     });
+
+    it('should support multiple properties', function(done) {
+      exiv.getImageTags(dir + '/books.jpg', function(err, tags) {
+        tags['Iptc.Application2.Keywords'].should.be.an.Array;
+        tags['Iptc.Application2.Keywords'].should.containDeep(['one', 'two', 'three']);
+        done();
+      });
+    });
   });
 
   describe('.setImageTags()', function(){
@@ -57,6 +65,7 @@ describe('exiv2', function(){
         "Exif.Photo.UserComment" : "Some books..",
         "Exif.Canon.OwnerName" : "Sørens kamera",
         "Iptc.Application2.RecordVersion" : "2",
+        "Iptc.Application2.Keywords" : ['four', 'five'],
         "Xmp.dc.subject" : "A camera"
       };
       exiv.setImageTags(temp, tags, function(err){
@@ -66,6 +75,7 @@ describe('exiv2', function(){
           tags.should.have.property('Exif.Photo.UserComment', "Some books..");
           tags.should.have.property('Exif.Canon.OwnerName', "Sørens kamera");
           tags.should.have.property('Iptc.Application2.RecordVersion', "2");
+          tags.should.have.property('Iptc.Application2.Keywords', ['four', 'five']);
           tags.should.have.property('Xmp.dc.subject', "A camera");
           done();
         });
